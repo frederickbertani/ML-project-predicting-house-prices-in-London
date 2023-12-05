@@ -1,0 +1,248 @@
+# Import all the libraries which we will need for the entire analysis
+
+import pandas as pd 
+import os
+import numpy as np
+
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from pandas.plotting import scatter_matrix
+from scipy.stats import randint
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import RandomizedSearchCV
+
+from sklearn.model_selection import GridSearchCV
+from sklearn.linear_model import LinearRegression
+from sklearn.tree import DecisionTreeRegressor
+
+from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_absolute_error
+
+from sklearn.ensemble import RandomForestRegressor
+
+from sklearn.svm import SVR
+
+# Can also set-up MatPlotLib for nice figures
+mpl.rc('axes', labelsize=14)
+mpl.rc('xtick', labelsize=12)
+mpl.rc('ytick', labelsize=12)
+
+# Set the directory in which the Datasets are located
+# os.chdir('C:/Users/frede/OneDrive/Documents/Python/ML_Summer2023/TrainingModel/')
+
+Original_Df = pd.read_csv('ML_Housing_trial.csv') # Load dataset
+
+selected_columns = ['Latitude', 'Longitude', 'Price', 'Income', 'Crime Rate'] # Number columns
+
+# Remove outliers
+Df1 = Original_Df[Original_Df['Price']<= 2000000]
+Df1 = Df1.reset_index(drop=True)
+
+# Set Income categories
+Df1['Income_cat'] = pd.cut(Df1['Income'], bins=[0., 40000, 50000, 60000, 70000, 80000, np.inf], labels=[30000,40000, 50000, 60000, 70000, 80000])
+
+# Split the training set from the test set
+train_set, test_set = train_test_split(Df1, test_size=0.2, random_state=27)
+
+split = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=27)
+for train_index, test_index in split.split(Df1, Df1['Income_cat']):
+    stratTrain = Df1.loc[train_index]
+    stratTest = Df1.loc[test_index]
+
+def income_cat_proportions(data):
+    return data["Income_cat"].value_counts() / len(data)
+compare_props = pd.DataFrame({
+    "Overall": income_cat_proportions(Df1),
+    "Stratified": income_cat_proportions(stratTest),
+    "Random": income_cat_proportions(test_set),
+}).sort_index()
+compare_props["Rand. %error"] = 100 * compare_props["Random"] / compare_props["Overall"] - 100
+compare_props["Strat. %error"] = 100 * compare_props["Stratified"] / compare_props["Overall"] - 100
+
+# To see the Errors in choice of test/train data selection just view 'compare_props'
+
+for set_ in (stratTrain, stratTest):
+    set_.drop("Income_cat", axis=1, inplace=True)
+
+# Reorganise the datasets into numerical datasets
+Df2_labels = stratTrain["Price"].copy() # make labels
+Df2 = stratTrain.drop('Price', axis = 1) # drop labels for training
+Df2 = Df2.drop(columns = ['Address', 'Postcode', 'Postcode District'], axis = 1) # drop non-numerical columns
+
+
+Df2test_labels = stratTest["Price"].copy() # make labels
+Df2test = stratTest.drop('Price', axis = 1) # drop labels for training
+Df2test = Df2test.drop(columns = ['Address', 'Postcode', 'Postcode District'], axis = 1) # drop non-numerical columns
+
+def display_scores(scores):
+    print("RMSE Scores:", scores)
+    print("Mean RMSE:", scores.mean())
+    print("Standard deviation RMSE:", scores.std())
+
+
+# Now test some models!
+
+####################################################################################################
+#### Linear regression model
+####################################################################################################
+
+lin_reg = LinearRegression()
+lin_reg.fit(Df2, Df2_labels)
+
+# try to see effect
+some_data = Df2.iloc[:5]
+some_labels = Df2_labels.iloc[:5]
+
+print("Predictions:", lin_reg.predict(some_data))
+print("Labels:", list(some_labels))
+
+Price_predictions = lin_reg.predict(Df2)
+lin_mse = mean_squared_error(Df2_labels, Price_predictions)
+lin_rmse = np.sqrt(lin_mse)
+print("Linear Regression RMSE:", lin_rmse) # Use RMSE if fewer outliers
+
+lin_mae = mean_absolute_error(Df2_labels, Price_predictions)
+print("Linear Regression Mean Asbolute Error:", lin_mae) # Use MAE if more outliers
+
+####################################################################################################
+### Decision Tree regressor model
+####################################################################################################
+
+tree_reg = DecisionTreeRegressor(random_state=27)
+tree_reg.fit(Df2, Df2_labels)
+
+Price_predictions = tree_reg.predict(Df2)
+tree_mse = mean_squared_error(Df2_labels, Price_predictions)
+tree_rmse = np.sqrt(tree_mse)
+print("Tree RMSE:", tree_rmse)
+
+tree_mae = mean_absolute_error(Df2_labels, Price_predictions)
+print("Tree MAE:", tree_mae) # Use MAE if more outliers
+
+# Can check if RMSE and MAE haven't overfitted the training data by using cross-eval
+scores = cross_val_score(tree_reg, Df2, Df2_labels, 
+                         scoring='neg_mean_squared_error', cv=10)
+tree_rmse_scores = np.sqrt(-scores)
+
+display_scores(tree_rmse_scores)
+
+# Scores: [478170.13079397 478119.93585196 479624.50344145 468430.18992294
+#  478673.11089095 460626.80673514 476364.06704174 469051.66409153
+#  480134.39652552 467843.40930618]
+# Mean: 473703.8214601381
+# Standard deviation: 6343.7686172222
+
+####################################################################################################
+### SVR model
+####################################################################################################
+
+svm_reg = SVR(kernel="linear")
+svm_reg.fit(Df2, Df2_labels)
+SVR_predictions = svm_reg.predict(Df2)
+svm_mse = mean_squared_error(Df2_labels, SVR_predictions)
+svm_rmse = np.sqrt(svm_mse)
+print("SVR RMSE:", svm_rmse) 
+
+# SVR RMSE: 361521.3373921679
+
+####################################################################################################
+#### Fine tuning our model: Forrest Tree regressor since errors are much smaller
+####################################################################################################
+
+Parameter_Grid = [
+        {'n_estimators': [3,10,30], 'max_features': [2,4,6,8]},
+        {'bootstrap':[False], 'n_estimators':[3,10], 'max_features':[2,3,4]}
+    ]
+
+forest_reg = RandomForestRegressor(random_state=27)
+grid_search = GridSearchCV(forest_reg, Parameter_Grid, cv=5, 
+                           scoring='neg_mean_squared_error', return_train_score=True)
+
+grid_search.fit(Df2, Df2_labels)
+
+GS_best_param = grid_search.best_params_
+GS_best_estimator = grid_search.best_estimator_
+
+CV_Res = grid_search.cv_results_
+for mean_score, params in zip(CV_Res["mean_test_score"], CV_Res["params"]):
+    print('CV Search for Forest model ', np.sqrt(-mean_score), params)
+
+# CV Search for Forest model  400143.4011428721 {'max_features': 2, 'n_estimators': 3}
+# CV Search for Forest model  369179.6396865507 {'max_features': 2, 'n_estimators': 10}
+# CV Search for Forest model  359782.89469915495 {'max_features': 2, 'n_estimators': 30}
+# CV Search for Forest model  402274.043084984 {'max_features': 4, 'n_estimators': 3}
+# CV Search for Forest model  371692.805045723 {'max_features': 4, 'n_estimators': 10}
+# CV Search for Forest model  362458.9085911424 {'max_features': 4, 'n_estimators': 30}
+# CV Search for Forest model  402274.043084984 {'max_features': 6, 'n_estimators': 3}
+# CV Search for Forest model  371692.805045723 {'max_features': 6, 'n_estimators': 10}
+# CV Search for Forest model  362458.9085911424 {'max_features': 6, 'n_estimators': 30}
+# CV Search for Forest model  402274.043084984 {'max_features': 8, 'n_estimators': 3}
+# CV Search for Forest model  371692.805045723 {'max_features': 8, 'n_estimators': 10}
+# CV Search for Forest model  362458.9085911424 {'max_features': 8, 'n_estimators': 30}
+# CV Search for Forest model  412187.33329506154 {'bootstrap': False, 'max_features': 2, 'n_estimators': 3}
+# CV Search for Forest model  389770.61613200314 {'bootstrap': False, 'max_features': 2, 'n_estimators': 10}        
+# CV Search for Forest model  416895.6820884405 {'bootstrap': False, 'max_features': 3, 'n_estimators': 3}
+# CV Search for Forest model  396378.83503136376 {'bootstrap': False, 'max_features': 3, 'n_estimators': 10}        
+# CV Search for Forest model  464820.7919815947 {'bootstrap': False, 'max_features': 4, 'n_estimators': 3}
+# CV Search for Forest model  461919.4174051218 {'bootstrap': False, 'max_features': 4, 'n_estimators': 10}
+
+
+####################################################################################################
+####### Randomized search trial
+####################################################################################################
+
+param_distribs = {
+        'n_estimators': randint(low=1, high=200),
+        'max_features': randint(low=1, high=8),
+    }
+
+forest_reg = RandomForestRegressor(random_state=27)
+rnd_search = RandomizedSearchCV(forest_reg, param_distributions=param_distribs,
+                                n_iter=10, cv=5, scoring='neg_mean_squared_error', random_state=27)
+rnd_search.fit(Df2, Df2_labels)
+
+cvres = rnd_search.cv_results_
+for mean_score, params in zip(cvres["mean_test_score"], cvres["params"]):
+    print(np.sqrt(-mean_score), params)
+
+# 358243.89393534453 {'max_features': 4, 'n_estimators': 185}
+# 357662.85748975805 {'max_features': 1, 'n_estimators': 32}
+# 357407.79194350383 {'max_features': 1, 'n_estimators': 38} % These are the best parameters available
+# 358886.87046924897 {'max_features': 1, 'n_estimators': 26}
+# 358641.0820417778 {'max_features': 6, 'n_estimators': 114}
+# 357797.00524765416 {'max_features': 3, 'n_estimators': 128}
+# 357527.29226684035 {'max_features': 3, 'n_estimators': 175}
+# 357513.3090229149 {'max_features': 3, 'n_estimators': 178}
+# 358199.3632120995 {'max_features': 5, 'n_estimators': 191}
+# 358240.7470010836 {'max_features': 7, 'n_estimators': 160}
+
+####################################################################################################
+# Apply the best model to the training data and produce the best possible model
+####################################################################################################
+
+# Applying the best found features to the RandomForestRegressor
+forest_reg = RandomForestRegressor(max_features= 1, n_estimators= 38, random_state=27)
+
+# Fitting the model to our training data
+forest_reg.fit(Df2, Df2_labels)
+
+# Testing on the test set
+pred = forest_reg.predict(Df2test)
+
+# Mean Absolute Error (MAE)
+mae = mean_absolute_error(Df2test_labels, pred)
+
+# Mean Squared Error (MSE)
+mse = mean_squared_error(Df2test_labels, pred)
+
+# Root Mean Squared Error (RMSE)
+rmse = mean_squared_error(Df2test_labels, pred, squared=False)
+
+print(f'Mean Absolute Error (MAE): {mae}')
+print(f'Mean Squared Error (MSE): {mse}')
+print(f'Root Mean Squared Error (RMSE): {rmse}')
+
+import joblib # Save the model for further use using joblib
+joblib.dump(forest_reg, 'RanForReg_RanSearchCV_Best.joblib')
